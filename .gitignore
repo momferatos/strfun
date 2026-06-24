@@ -1,0 +1,17 @@
+# build artifacts
+*.exe
+*.mod
+*.o
+*~
+
+# CMake
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# inputs / outputs
+*.h5
+*.dat
+*.vtk
+*.xmf
