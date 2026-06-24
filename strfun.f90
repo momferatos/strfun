@@ -21,7 +21,6 @@ module types
   real(rk), parameter    :: PI=3.14159265358979323846264338327950&
        &2884197169399375105820974944592307816406286208998628034825&
        &342117068_rk
-  integer(ik) :: mpisize=1
 end module types
 
 module input_output
@@ -430,12 +429,10 @@ program strfun
   call get_command_argument(1,buf)
   read(buf,*) n
   call get_command_argument(2,buf)
-  read(buf,*) mpisize
-  call get_command_argument(3,buf)
   read(buf,*) nord
-  call get_command_argument(4,buf)
+  call get_command_argument(3,buf)
   read(buf,*) maxpoints
-  call get_command_argument(5,buf)
+  call get_command_argument(4,buf)
   read(buf,*) nfile
   
   n1=n
