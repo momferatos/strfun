@@ -349,12 +349,12 @@ module structure
 contains
 
 
-  subroutine structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,maxincr,maxord,maxpoints)
+  subroutine structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,maxincr,maxord,maxpoints,nfile)
     use types
     use random
     use input_output
     implicit none
-    integer(ik), intent(IN) :: n1,n2,n3,maxord,maxpoints
+    integer(ik), intent(IN) :: n1,n2,n3,maxord,maxpoints,nfile
     integer(ik), intent(IN) :: maxincr
     real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3
     real(rks), dimension(:,:,:), intent(IN)          :: b1,b2,b3
@@ -565,7 +565,7 @@ contains
 
     end do
 
-    write(hdf5_fname,'(a,i0,a)') 'strfun.',n,'.h5'
+    write(hdf5_fname,'(a,i6.6,a)') 'strfun.',nfile,'.h5'
     call add_hdf5_1d(hdf5_fname,'Dx',dx)
     call write_strfun_to_hdf5(hdf5_fname, 'Du_l', maxincr, maxord, strfuncsv, totinc)
     call write_strfun_to_hdf5(hdf5_fname, 'Du_t', maxincr, maxord, strfuncsvt, totinc)
@@ -607,14 +607,15 @@ program strfun
   real(rks), dimension(:,:,:), allocatable :: u1,u2,u3,b1,b2,b3
   real(rks), dimension(:,:,:), allocatable :: g,q1,q2,q3
   character(256) :: buf, fname
-  integer(ik) :: nord,nmaxincr,maxpoints
+  integer(ik) :: nord,nmaxincr,maxpoints,nfile
+  integer :: ip1,ip2
 
   if(command_argument_count() /= 5) then
    n = 128
    nord = 3
    maxpoints = 100
    nmaxincr = 64
-   fname = 'output.888888.h5'
+   fname = 'output.999999.h5'
   else
    call get_command_argument(1,buf)
    read(buf,*) n
@@ -624,8 +625,19 @@ program strfun
    read(buf,*) maxpoints
    call get_command_argument(4,buf)
    read(buf,*) nmaxincr
-   call get_command_argument(5,buf)
-   read(buf,*) fname
+   ! read the filename directly (list-directed input would stop at a '/')
+   call get_command_argument(5,fname)
+  end if
+
+  ! input files follow the output.<nfile>.h5 convention; parse the snapshot
+  ! number nfile out of the filename so the output can be tagged with it
+  ip2 = index(trim(fname), '.h5', back=.true.)
+  ip1 = index(fname(1:max(ip2-1,1)), '.', back=.true.)
+  if(ip1>0 .and. ip2>ip1+1) then
+     read(fname(ip1+1:ip2-1),*) nfile
+  else
+     print *, 'Warning: could not parse nfile from ', trim(fname), '; using 0'
+     nfile = 0
   end if
 
   n1=n
@@ -650,7 +662,7 @@ program strfun
 
   call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,trim(fname),MHD,RAD)
 
-  call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,nmaxincr,nord,maxpoints)
+  call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,nmaxincr,nord,maxpoints,nfile)
 
   print *, 'Done.'
 
