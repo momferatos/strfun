@@ -30,6 +30,93 @@ module input_output
 
 contains
 
+subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun_data, tot)
+   use types
+   implicit none
+   character(*), intent(IN) :: hdf5_fname
+   character(*), intent(IN) :: strfun_name
+   integer(ik), intent(IN) :: maxincr, maxord
+   real(rk), dimension(1:maxincr, 1:maxord), intent(IN) :: strfun_data
+   real(rk), dimension(1:maxincr), intent(IN) :: tot
+   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+   real(rk), dimension(1:maxincr) :: out
+   character(64) :: name_buf
+   integer(ik) :: ord
+
+   do ord=1,maxord
+      out(:) = strfun_data(:,ord)/tot(:)
+      write(name_buf,'(a,i0)') strfun_name, ord
+      call add_hdf5_1d(hdf5_fname, name_buf, out)
+   end do
+   
+   end subroutine write_strfun_to_hdf5
+
+   subroutine add_hdf5_1d(filename, dsetname, data_array)
+    use hdf5
+    implicit none
+
+    ! arguments
+    character(len=*), intent(in) :: filename
+    character(len=*), intent(in) :: dsetname
+    real(kind=8), dimension(:), intent(in), contiguous :: data_array
+
+    ! parameters & dimensions
+    integer, parameter :: rank = 1
+    integer(hsize_t), dimension(1) :: dims
+    
+    ! identifiers & error flag
+    integer(hid_t) :: file_id, dataspace_id, dataset_id
+    integer :: error
+    logical, save :: first_time = .true.
+    logical :: file_exists
+    logical :: dset_exists
+
+    ! get the size of the passed array dynamically
+    dims(1) = size(data_array)
+
+    ! 1. initialize hdf5 library
+    call h5open_f(error)
+
+    ! 2. first call: create/truncate the file (warn if it already exists);
+    !    later calls: open read-write and append, replacing existing datasets
+    if(first_time) then
+       inquire(file=filename, exist=file_exists)
+       if(file_exists) then
+          print *, 'Warning: file ', trim(filename), ' already exists. Overwriting.'
+       end if
+       call h5fcreate_f(filename, h5f_acc_trunc_f, file_id, error)
+       first_time = .false.
+    else
+        call h5fopen_f(filename, h5f_acc_rdwr_f, file_id, error)
+        
+        ! check if a dataset with this name already exists
+        call h5lexists_f(file_id, dsetname, dset_exists, error)
+        if (dset_exists) then
+            ! delete old link to prevent "name already exists" crash
+            call h5ldelete_f(file_id, dsetname, error)
+        end if
+    end if
+
+    ! 3. create the 1d dataspace based on array size
+    call h5screate_simple_f(rank, dims, dataspace_id, error)
+
+    ! 4. create the dataset (using native double type)
+    call h5dcreate_f(file_id, dsetname, h5t_native_double, dataspace_id, &
+                     dataset_id, error)
+
+    ! 5. write the array data (using native double type)
+    call h5dwrite_f(dataset_id, h5t_native_double, data_array, dims, error)
+
+    ! 6. clean up identifiers
+    call h5dclose_f(dataset_id, error)
+    call h5sclose_f(dataspace_id, error)
+    call h5fclose_f(file_id, error)
+
+    ! 7. close hdf5 library
+    call h5close_f(error)
+end subroutine add_hdf5_1d
+
+
   subroutine read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,filename,mhd)
     implicit none
     integer(ik), intent(IN)                           :: n1,n2,n3
@@ -174,7 +261,9 @@ contains
 
 
   subroutine structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,maxincr,maxord,maxpoints)
+    use types
     use random
+    use input_output
     implicit none
     integer(ik), intent(IN) :: n1,n2,n3,maxord,maxpoints
     integer(ik), intent(INOUT) :: maxincr
@@ -182,68 +271,39 @@ contains
     real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3,b1,b2,b3
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     integer(ik) :: i,j,k,n,ord
-    real(rk) :: dx
     real(qp) :: tot
     real(rk), dimension(1:3) :: vel1,vel2,lvec,mag1,mag2,du,db
     real(rk) :: duL,duT,dbL,dbT,dzpL,dzmL,bL0
     real(rk) :: pv,pvt,pb,pbt,pzp,pzm
     real(rk) :: scale=1.0_rk
-    character(256) :: fmt,fname
-    integer :: lstrfun_file=21,trstrfun_file=22,psstrfun_file=25,&
-         &pdstrfun_file=26,fourthirds_file=701,blstrfun_file=702,&
-         &btrstrfun_file=703
     integer(ik) :: i1,i2,j1,j2,k1,k2
     real(rk) :: dist
     real(rk) :: ff
-    real(rk), dimension(:),allocatable :: strfuncsv,strfuncsvt,strfuncsb,&
+    real(rk), dimension(:,:),allocatable :: strfuncsv,strfuncsvt,strfuncsb,&
          &strfuncsbt,strfuncszp,strfuncszm
+    real(rk), dimension(:), allocatable :: dx
+    real(rk), dimension(:), allocatable :: totinc
     integer(ik) :: nn1,nn2,nn3
     integer(i2b), dimension(:), allocatable :: iii,jjj,kkk
     integer(ik), dimension(:), allocatable  :: mm
     integer(i8b) :: niii,m,npoints
     integer(ik) :: inc,npointsi,irand,cputime
+    character(256) :: strfun_name, hdf5_fname
 
     nn1=n1
     nn2=n2
     nn3=n3
-    !maxincr=n1/2
-
-    write(fname,'(a,i5.5,a)') 'lstrfun.',nfilestrfun,'.dat'
-    open(lstrfun_file,file=trim(fname),action='write',form='formatted')
-    write(fname,'(a,i5.5,a)') 'trstrfun.',nfilestrfun,'.dat'
-    open(trstrfun_file,file=trim(fname),action='write',form='formatted')
-
-    if(MHD) then
-       write(fname,'(a,i5.5,a)') 'fourthirds.',nfilestrfun,'.dat'
-       open(fourthirds_file,file=trim(fname),action='write',&
-            &form='formatted')
-       write(fname,'(a,i5.5,a)') 'blstrfun.',nfilestrfun,'.dat'
-       open(blstrfun_file,file=trim(fname),action='write',&
-            &form='formatted')
-       write(fname,'(a,i5.5,a)') 'btrstrfun.',nfilestrfun,'.dat'
-       open(btrstrfun_file,file=trim(fname),action='write',&
-            &form='formatted')
-       write(fname,'(a,i5.5,a)') 'psstrfun.',nfilestrfun,'.dat'
-       open(psstrfun_file,file=trim(fname),action='write',&
-            &form='formatted')
-       write(fname,'(a,i5.5,a)') 'pdstrfun.',nfilestrfun,'.dat'
-       open(pdstrfun_file,file=trim(fname),action='write',&
-            &form='formatted')
-    end if
-    write(fmt,'(a,i0,a)')  '(',maxord+1,'e35.14)'
-
-
-
-
     n=max(n1,n2,n3)
     tot=0
 
-    allocate(strfuncsv(maxord),strfuncsvt(maxord))
-    allocate(strfuncsb(maxord),strfuncsbt(maxord))
-    allocate(strfuncszp(maxord),strfuncszm(maxord))
+    allocate(dx(maxincr))
+    allocate(totinc(maxincr))
+    allocate(strfuncsv(maxincr,maxord),strfuncsvt(maxincr,maxord))
+    allocate(strfuncsb(maxincr,maxord),strfuncsbt(maxincr,maxord))
+    allocate(strfuncszp(maxincr,maxord),strfuncszm(maxincr,maxord))
 
 
-    niii=int(4./3.*3.14159*n**2)
+    niii=int(4./3.*PI*n**2)
     allocate(iii(niii))
     allocate(jjj(niii))
     allocate(kkk(niii))
@@ -251,7 +311,7 @@ contains
     call system_clock(cputime)
     call srand(cputime)
     do inc=1,maxincr
-
+       dx(inc) = real(inc, rk) * 2.0 * PI/ real(n, rk)
        npointsi=0
        do i=-inc-1,inc+1
           do j=-inc-1,inc+1
@@ -289,9 +349,9 @@ contains
        end if
        
        tot=0.0
-       strfuncsv=0.  ; strfuncsvt=0.
-       strfuncsb=0.  ; strfuncsbt=0.
-       strfuncszp=0. ; strfuncszm=0.
+       strfuncsv(inc, :)=0.  ; strfuncsvt(inc, :)=0.
+       strfuncsb(inc, :)=0.  ; strfuncsbt(inc, :)=0.
+       strfuncszp(inc, :)=0. ; strfuncszm(inc, :)=0.
        ff=0.
        print *,'increment: ', inc
        !$omp parallel do private(i1,j1,m,lvec,dist,vel1,vel2,mag1,mag2,du,db,&
@@ -351,13 +411,13 @@ contains
                    pv=1.0_rk ; pvt=1.0_rk
                    pb=1.0_rk ; pbt=1.0_rk ; pzp=1.0_rk ; pzm=1.0_rk
                    do ord=1,maxord
-                      pv =pv *abs(duL) ; strfuncsv(ord) =strfuncsv(ord) +pv
-                      pvt=pvt*duT      ; strfuncsvt(ord)=strfuncsvt(ord)+pvt
+                      pv =pv *abs(duL) ; strfuncsv(inc,ord) =strfuncsv(inc,ord) +pv
+                      pvt=pvt*duT      ; strfuncsvt(inc,ord)=strfuncsvt(inc,ord)+pvt
                       if(MHD) then
-                         pb =pb *abs(dbL) ; strfuncsb(ord) =strfuncsb(ord) +pb
-                         pbt=pbt*dbT      ; strfuncsbt(ord)=strfuncsbt(ord)+pbt
-                         pzp=pzp*abs(dzpL); strfuncszp(ord)=strfuncszp(ord)+pzp
-                         pzm=pzm*abs(dzmL); strfuncszm(ord)=strfuncszm(ord)+pzm
+                         pb =pb *abs(dbL) ; strfuncsb(inc,ord) =strfuncsb(inc,ord) +pb
+                         pbt=pbt*dbT      ; strfuncsbt(inc,ord)=strfuncsbt(inc,ord)+pbt
+                         pzp=pzp*abs(dzpL); strfuncszp(inc,ord)=strfuncszp(inc,ord)+pzp
+                         pzm=pzm*abs(dzmL); strfuncszm(inc,ord)=strfuncszm(inc,ord)+pzm
                       end if
                    end do
 
@@ -372,29 +432,25 @@ contains
              end do
           end do
        end do
-       !$omp end parallel do
+      !$omp end parallel do
 
-
-       dx=2*PI/(n-1)
-
-       write(lstrfun_file,fmt)  inc*dx,abs(strfuncsv(:))/tot
-       write(trstrfun_file,fmt) inc*dx,abs(strfuncsvt(:))/tot
-
-       if(MHD) then
-          write(blstrfun_file,fmt)  inc*dx,abs(strfuncsb(:))/tot
-          write(btrstrfun_file,fmt) inc*dx,abs(strfuncsbt(:))/tot
-          write(psstrfun_file,fmt)  inc*dx,abs(strfuncszp(:))/tot
-          write(pdstrfun_file,fmt)  inc*dx,abs(strfuncszm(:))/tot
-          write(fourthirds_file,'(2e30.15)') inc*dx,ff/tot
-       end if
+       ! pair count for this increment: used to normalize this row only
+       totinc(inc) = tot
 
     end do
 
-
-
+    write(hdf5_fname,'(a,i0,a)') 'strfun.',n,'.h5'
+    call add_hdf5_1d(hdf5_fname,'Dx',dx)
+    call write_strfun_to_hdf5(hdf5_fname, 'Du_l', maxincr, maxord, strfuncsv, totinc)
+    call write_strfun_to_hdf5(hdf5_fname, 'Du_t', maxincr, maxord, strfuncsvt, totinc)
+    if(MHD) then
+       call write_strfun_to_hdf5(hdf5_fname, 'Db_l', maxincr, maxord, strfuncsb, totinc)
+       call write_strfun_to_hdf5(hdf5_fname, 'Db_t', maxincr, maxord, strfuncsbt, totinc)
+       call write_strfun_to_hdf5(hdf5_fname, 'Dzp', maxincr, maxord, strfuncszp, totinc)
+       call write_strfun_to_hdf5(hdf5_fname, 'Dzm', maxincr, maxord, strfuncszm, totinc)
+    end if
 
     return
-
 
   end subroutine structure_functions
 
@@ -416,42 +472,46 @@ contains
 end module structure
 
 program strfun
+
   use types
   use structure
   use input_output
   implicit none
   integer(ik) :: n,n1,n2,n3
   real(rks), dimension(:,:,:), allocatable :: u1,u2,u3,b1,b2,b3
-  character(256) :: buf
+  character(256) :: buf, fname
   integer(ik) :: nord,nmaxincr,maxpoints
-  integer(ik) :: nfile
 
-  call get_command_argument(1,buf)
-  read(buf,*) n
-  call get_command_argument(2,buf)
-  read(buf,*) nord
-  call get_command_argument(3,buf)
-  read(buf,*) maxpoints
-  call get_command_argument(4,buf)
-  read(buf,*) nfile
-  
+  if(command_argument_count() /= 5) then
+   n = 128
+   nord = 3
+   maxpoints = 100
+   nmaxincr = 64
+   fname = 'output.888888.h5'
+  else
+   call get_command_argument(1,buf)
+   read(buf,*) n
+   call get_command_argument(2,buf)
+   read(buf,*) nord
+   call get_command_argument(3,buf)
+   read(buf,*) maxpoints
+   call get_command_argument(4,buf)
+   read(buf,*) nmaxincr
+   call get_command_argument(5,buf)
+   read(buf,*) fname
+  end if
+
   n1=n
   n2=n
   n3=n
-  allocate(u1(n,n,n3),u2(n,n,n3),u3(n,n,n3))
-  allocate(b1(n,n,n3),b2(n,n,n3),b3(n,n,n3))
-  MHD=.true.
+  MHD=.false.
+  allocate(u1(n1,n2,n3),u2(n1,n2,n3),u3(n1,n2,n3))
+  !if(MHD) then
+  allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
+  !end if  
 
-  write(buf,'(a,i6.6,a)') 'output.', nfile, '.h5'
-  call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,trim(buf),MHD)
+  call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,trim(fname),MHD)
 
-
-
-
-
-  print *, 'Calculating structure functions...'
-
-  nmaxincr=n/2
   call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,nmaxincr,nord,maxpoints)
 
   print *, 'Done.'
