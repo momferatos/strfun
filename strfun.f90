@@ -606,28 +606,12 @@ program strfun
   integer(ik) :: n,n1,n2,n3
   real(rks), dimension(:,:,:), allocatable :: u1,u2,u3,b1,b2,b3
   real(rks), dimension(:,:,:), allocatable :: g,q1,q2,q3
-  character(256) :: buf, fname
+  character(256) :: fname
   integer(ik) :: nord,nmaxincr,maxpoints,nfile
   integer :: ip1,ip2
 
-  if(command_argument_count() /= 5) then
-   n = 128
-   nord = 3
-   maxpoints = 100
-   nmaxincr = 64
-   fname = 'output.999999.h5'
-  else
-   call get_command_argument(1,buf)
-   read(buf,*) n
-   call get_command_argument(2,buf)
-   read(buf,*) nord
-   call get_command_argument(3,buf)
-   read(buf,*) maxpoints
-   call get_command_argument(4,buf)
-   read(buf,*) nmaxincr
-   ! read the filename directly (list-directed input would stop at a '/')
-   call get_command_argument(5,fname)
-  end if
+  ! parse named command-line options (-n, -p, -m, -i, -f; -h for help)
+  call parse_command_line(n, nord, maxpoints, nmaxincr, fname)
 
   ! input files follow the output.<nfile>.h5 convention; parse the snapshot
   ! number nfile out of the filename so the output can be tagged with it
@@ -668,5 +652,109 @@ program strfun
 
 
   stop
+
+contains
+
+  subroutine parse_command_line(n, nord, maxpoints, nmaxincr, fname)
+    ! Parse named options in any order; every option has a default, so
+    ! all of them may be omitted. Values may be given either as a separate
+    ! argument (--size 256) or inline (--size=256).
+    implicit none
+    integer(ik), intent(out)  :: n, nord, maxpoints, nmaxincr
+    character(*), intent(out) :: fname
+    integer        :: i, nargs, eq
+    character(256) :: arg, key, val
+    logical        :: inline_val
+
+    ! defaults
+    n         = 128
+    nord      = 3
+    maxpoints = 100
+    nmaxincr  = 64
+    fname     = 'output.999999.h5'
+
+    nargs = command_argument_count()
+    i = 1
+    do while (i <= nargs)
+       call get_command_argument(i, arg)
+
+       ! support both "--key=value" and "--key value"
+       eq = index(arg, '=')
+       if (eq > 0) then
+          key        = arg(1:eq-1)
+          val        = arg(eq+1:)
+          inline_val = .true.
+       else
+          key        = arg
+          val        = ''
+          inline_val = .false.
+       end if
+
+       select case (trim(key))
+       case ('-n', '--size')
+          call need_value(i, val, inline_val, key) ; n         = read_int(val, key)
+       case ('-p', '--order')
+          call need_value(i, val, inline_val, key) ; nord      = read_int(val, key)
+       case ('-m', '--maxpoints')
+          call need_value(i, val, inline_val, key) ; maxpoints = read_int(val, key)
+       case ('-i', '--maxincr')
+          call need_value(i, val, inline_val, key) ; nmaxincr  = read_int(val, key)
+       case ('-f', '--file')
+          call need_value(i, val, inline_val, key) ; fname     = val
+       case ('-h', '--help')
+          call print_usage() ; stop
+       case default
+          print '(2a)', 'Error: unknown option: ', trim(arg)
+          call print_usage() ; stop 1
+       end select
+
+       i = i + 1
+    end do
+  end subroutine parse_command_line
+
+  subroutine need_value(i, val, inline_val, key)
+    ! supply the value for an option: either inline (--key=value, already
+    ! in val) or the next command-line argument (--key value), advancing i
+    implicit none
+    integer, intent(inout)      :: i
+    character(*), intent(inout) :: val
+    logical, intent(in)         :: inline_val
+    character(*), intent(in)    :: key
+    if (.not. inline_val) then
+       if (i + 1 > command_argument_count()) then
+          print '(2a)', 'Error: missing value for option ', trim(key)
+          call print_usage() ; stop 1
+       end if
+       i = i + 1
+       call get_command_argument(i, val)
+    end if
+  end subroutine need_value
+
+  integer(ik) function read_int(val, key) result(num)
+    implicit none
+    character(*), intent(in) :: val, key
+    integer :: ios
+    read(val, *, iostat=ios) num
+    if (ios /= 0) then
+       print '(4a)', 'Error: invalid integer "', trim(val), '" for option ', trim(key)
+       call print_usage() ; stop 1
+    end if
+  end function read_int
+
+  subroutine print_usage()
+    implicit none
+    print '(a)', 'Usage: strfun [options]'
+    print '(a)', ''
+    print '(a)', 'Compute velocity (and, if present in the file, magnetic and'
+    print '(a)', 'radiation) structure functions from an ALIAKMON-style HDF5 snapshot.'
+    print '(a)', ''
+    print '(a)', 'Options:'
+    print '(a)', '  -n, --size N        grid points per dimension        (default 128)'
+    print '(a)', '  -p, --order P       max structure-function order     (default 3)'
+    print '(a)', '  -m, --maxpoints M   max sampled point-pairs / shell  (default 100)'
+    print '(a)', '  -i, --maxincr I     max increment (number of shells) (default 64)'
+    print '(a)', '  -f, --file FILE     input HDF5 file        (default output.999999.h5)'
+    print '(a)', '  -h, --help          show this help and exit'
+  end subroutine print_usage
 
 end program strfun
