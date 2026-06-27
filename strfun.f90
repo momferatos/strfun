@@ -134,7 +134,8 @@ end subroutine add_hdf5_1d
   subroutine read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,filename,mhd)
     implicit none
     integer(ik), intent(IN)                           :: n1,n2,n3
-    real(rks), dimension(1:n1,1:n2,1:n3), intent(OUT) :: u1,u2,u3,b1,b2,b3
+    real(rks), dimension(1:n1,1:n2,1:n3), intent(OUT) :: u1,u2,u3
+    real(rks), dimension(:,:,:), intent(OUT)          :: b1,b2,b3
     character(*), intent(IN)                          :: filename
     logical, intent(IN)                               :: mhd
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -284,7 +285,8 @@ contains
     implicit none
     integer(ik), intent(IN) :: n1,n2,n3,maxord,maxpoints
     integer(ik), intent(IN) :: maxincr
-    real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3,b1,b2,b3
+    real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3
+    real(rks), dimension(:,:,:), intent(IN)          :: b1,b2,b3
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     integer(ik) :: i,j,k,n,ord
     real(qp) :: tot
@@ -524,9 +526,12 @@ program strfun
   n3=n
   MHD=.false.
   allocate(u1(n1,n2,n3),u2(n1,n2,n3),u3(n1,n2,n3))
-  !if(MHD) then
-  allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
-  !end if  
+  if(MHD) then
+     allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
+  else
+     ! no magnetic field needed; allocate empty so the dummy args stay valid
+     allocate(b1(0,0,0),b2(0,0,0),b3(0,0,0))
+  end if
 
   call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,trim(fname),MHD)
 
