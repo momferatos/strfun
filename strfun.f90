@@ -131,16 +131,19 @@ subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun
 end subroutine add_hdf5_1d
 
 
-  subroutine read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,filename,mhd)
+  subroutine read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,filename,mhd,rad)
     implicit none
     integer(ik), intent(IN)                           :: n1,n2,n3
     real(rks), dimension(1:n1,1:n2,1:n3), intent(OUT) :: u1,u2,u3
     real(rks), dimension(:,:,:), intent(OUT)          :: b1,b2,b3
+    real(rks), dimension(:,:,:), intent(OUT)          :: g,q1,q2,q3
     character(*), intent(IN)                          :: filename
-    logical, intent(IN)                               :: mhd
+    logical, intent(IN)                               :: mhd,rad
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    ! Read velocity (/u) and, for MHD, magnetic (/b) vector fields from an
-    ! ALIAKMON-style HDF5 file. Each dataset is stored as (3, n1, n2, n3).
+    ! Read velocity (/u) and, optionally, magnetic (/b) and radiative-flux
+    ! (/q) vector fields plus the scalar incident radiation (/G) from an
+    ! ALIAKMON-style HDF5 file. Vector datasets are stored as (3,n1,n2,n3),
+    ! scalar datasets as (n1,n2,n3).
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     integer(hid_t)                             :: file_id
     integer                                    :: error
@@ -168,6 +171,19 @@ end subroutine add_hdf5_1d
        b1 = 0.0_rks
        b2 = 0.0_rks
        b3 = 0.0_rks
+    end if
+
+    if(rad) then
+       call read_scalar('/G', g)
+       call read_vector('/q', vec)
+       q1 = vec(1,:,:,:)
+       q2 = vec(2,:,:,:)
+       q3 = vec(3,:,:,:)
+    else
+       g  = 0.0_rks
+       q1 = 0.0_rks
+       q2 = 0.0_rks
+       q3 = 0.0_rks
     end if
 
     deallocate(vec)
@@ -199,6 +215,28 @@ end subroutine add_hdf5_1d
 
       return
     end subroutine read_vector
+
+    subroutine read_scalar(dataset_name, dataset)
+      implicit none
+      character(*), intent(IN)                          :: dataset_name
+      real(rks), dimension(1:n1,1:n2,1:n3), intent(OUT) :: dataset
+      integer(hid_t)                   :: dset_id
+      integer(hsize_t), dimension(1:3) :: dims
+      integer                          :: err
+
+      dims = [int(n1,hsize_t), int(n2,hsize_t), int(n3,hsize_t)]
+      call h5dopen_f(file_id, dataset_name, dset_id, err)
+      call check_h5(err, 'opening dataset '//trim(dataset_name))
+      if(rks==sp) then
+         call h5dread_f(dset_id, H5T_NATIVE_REAL, dataset, dims, err)
+      else
+         call h5dread_f(dset_id, H5T_NATIVE_DOUBLE, dataset, dims, err)
+      end if
+      call check_h5(err, 'reading dataset '//trim(dataset_name))
+      call h5dclose_f(dset_id, err)
+
+      return
+    end subroutine read_scalar
 
   end subroutine read_hdf5_file
 
@@ -275,10 +313,11 @@ module structure
   use types
   implicit none
   logical :: MHD=.true.
+  logical :: RAD=.false.
 contains
 
 
-  subroutine structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,maxincr,maxord,maxpoints)
+  subroutine structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,maxincr,maxord,maxpoints)
     use types
     use random
     use input_output
@@ -287,18 +326,22 @@ contains
     integer(ik), intent(IN) :: maxincr
     real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3
     real(rks), dimension(:,:,:), intent(IN)          :: b1,b2,b3
+    real(rks), dimension(:,:,:), intent(IN)          :: g,q1,q2,q3
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     integer(ik) :: i,j,k,n,ord
     real(qp) :: tot
-    real(rk), dimension(1:3) :: vel1,vel2,lvec,mag1,mag2,du,db
+    real(rk), dimension(1:3) :: vel1,vel2,lvec,mag1,mag2,du,db,qr1,qr2,dq
     real(rk) :: duL,duT,dbL,dbT,dzpL,dzmL,bL0
+    real(rk) :: dG,dqL,dqT
     real(rk) :: pv,pvt,pb,pbt,pzp,pzm
+    real(rk) :: pg,pql,pqt
     real(rk) :: scale=1.0_rk
     integer(ik) :: i1,i2,j1,j2,k1,k2
     real(rk) :: dist
     real(rk) :: ff
     real(rk), dimension(:,:),allocatable :: strfuncsv,strfuncsvt,strfuncsb,&
          &strfuncsbt,strfuncszp,strfuncszm
+    real(rk), dimension(:,:),allocatable :: strfuncsg,strfuncsql,strfuncsqt
     real(rk), dimension(:), allocatable :: dx
     real(rk), dimension(:), allocatable :: totinc
     real(rk), dimension(:), allocatable :: ffinc
@@ -321,6 +364,8 @@ contains
     allocate(strfuncsv(maxincr,maxord),strfuncsvt(maxincr,maxord))
     allocate(strfuncsb(maxincr,maxord),strfuncsbt(maxincr,maxord))
     allocate(strfuncszp(maxincr,maxord),strfuncszm(maxincr,maxord))
+    allocate(strfuncsg(maxincr,maxord),strfuncsql(maxincr,maxord),&
+         &strfuncsqt(maxincr,maxord))
 
 
     ! generous upper bound on the lattice-point count in the largest shell
@@ -376,12 +421,14 @@ contains
        strfuncsv(inc, :)=0.  ; strfuncsvt(inc, :)=0.
        strfuncsb(inc, :)=0.  ; strfuncsbt(inc, :)=0.
        strfuncszp(inc, :)=0. ; strfuncszm(inc, :)=0.
+       strfuncsg(inc, :)=0.  ; strfuncsql(inc, :)=0. ; strfuncsqt(inc, :)=0.
        ff=0.
        print *,'increment: ', inc
        !$omp parallel do private(i1,j1,m,lvec,dist,vel1,vel2,mag1,mag2,du,db,&
-       !$omp& duL,duT,dbL,dbT,dzpL,dzmL,bL0,pv,pvt,pb,pbt,pzp,pzm,ord,i2,j2,k2) &
+       !$omp& duL,duT,dbL,dbT,dzpL,dzmL,bL0,pv,pvt,pb,pbt,pzp,pzm,ord,i2,j2,k2,&
+       !$omp& qr1,qr2,dq,dG,dqL,dqT,pg,pql,pqt) &
        !$omp& reduction(+:tot,strfuncsv,strfuncsvt,strfuncsb,strfuncsbt,&
-       !$omp& strfuncszp,strfuncszm,ff)
+       !$omp& strfuncszp,strfuncszm,strfuncsg,strfuncsql,strfuncsqt,ff)
        do k1=1,nn3
           do j1=1,nn2
              do i1=1,nn1
@@ -431,9 +478,26 @@ contains
                       dzmL=duL-dbL
                    end if
 
+                   if(RAD) then
+                      ! scalar incident-radiation increment
+                      dG=g(i2,j2,k2)-g(i1,j1,k1)
+                      ! radiative-flux vector increment, split into
+                      ! longitudinal and transverse parts relative to lvec
+                      qr1(1)=q1(i1,j1,k1)
+                      qr1(2)=q2(i1,j1,k1)
+                      qr1(3)=q3(i1,j1,k1)
+                      qr2(1)=q1(i2,j2,k2)
+                      qr2(2)=q2(i2,j2,k2)
+                      qr2(3)=q3(i2,j2,k2)
+                      dq(:)=qr2(:)-qr1(:)
+                      dqL=dot_product(dq(:),lvec(:))
+                      dqT=sqrt(max(dot_product(dq(:),dq(:))-dqL*dqL,0.0_rk))
+                   end if
+
                    ! accumulate order-p sums via running products
                    pv=1.0_rk ; pvt=1.0_rk
                    pb=1.0_rk ; pbt=1.0_rk ; pzp=1.0_rk ; pzm=1.0_rk
+                   pg=1.0_rk ; pql=1.0_rk ; pqt=1.0_rk
                    do ord=1,maxord
                       pv =pv *abs(duL) ; strfuncsv(inc,ord) =strfuncsv(inc,ord) +pv
                       pvt=pvt*duT      ; strfuncsvt(inc,ord)=strfuncsvt(inc,ord)+pvt
@@ -442,6 +506,11 @@ contains
                          pbt=pbt*dbT      ; strfuncsbt(inc,ord)=strfuncsbt(inc,ord)+pbt
                          pzp=pzp*abs(dzpL); strfuncszp(inc,ord)=strfuncszp(inc,ord)+pzp
                          pzm=pzm*abs(dzmL); strfuncszm(inc,ord)=strfuncszm(inc,ord)+pzm
+                      end if
+                      if(RAD) then
+                         pg =pg *abs(dG)  ; strfuncsg(inc,ord) =strfuncsg(inc,ord) +pg
+                         pql=pql*abs(dqL) ; strfuncsql(inc,ord)=strfuncsql(inc,ord)+pql
+                         pqt=pqt*dqT      ; strfuncsqt(inc,ord)=strfuncsqt(inc,ord)+pqt
                       end if
                    end do
 
@@ -476,6 +545,11 @@ contains
        ! Politano-Pouquet 4/3 flux: one signed value per increment
        call add_hdf5_1d(hdf5_fname, 'Fourthirds', ffinc/totinc)
     end if
+    if(RAD) then
+       call write_strfun_to_hdf5(hdf5_fname, 'DG',   maxincr, maxord, strfuncsg,  totinc)
+       call write_strfun_to_hdf5(hdf5_fname, 'Dq_l', maxincr, maxord, strfuncsql, totinc)
+       call write_strfun_to_hdf5(hdf5_fname, 'Dq_t', maxincr, maxord, strfuncsqt, totinc)
+    end if
 
     return
 
@@ -499,6 +573,7 @@ program strfun
   implicit none
   integer(ik) :: n,n1,n2,n3
   real(rks), dimension(:,:,:), allocatable :: u1,u2,u3,b1,b2,b3
+  real(rks), dimension(:,:,:), allocatable :: g,q1,q2,q3
   character(256) :: buf, fname
   integer(ik) :: nord,nmaxincr,maxpoints
 
@@ -525,6 +600,7 @@ program strfun
   n2=n
   n3=n
   MHD=.false.
+  RAD=.false.
   allocate(u1(n1,n2,n3),u2(n1,n2,n3),u3(n1,n2,n3))
   if(MHD) then
      allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
@@ -532,10 +608,16 @@ program strfun
      ! no magnetic field needed; allocate empty so the dummy args stay valid
      allocate(b1(0,0,0),b2(0,0,0),b3(0,0,0))
   end if
+  if(RAD) then
+     allocate(g(n1,n2,n3),q1(n1,n2,n3),q2(n1,n2,n3),q3(n1,n2,n3))
+  else
+     ! no radiation fields needed; allocate empty so the dummy args stay valid
+     allocate(g(0,0,0),q1(0,0,0),q2(0,0,0),q3(0,0,0))
+  end if
 
-  call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,trim(fname),MHD)
+  call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,trim(fname),MHD,RAD)
 
-  call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,nmaxincr,nord,maxpoints)
+  call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,nmaxincr,nord,maxpoints)
 
   print *, 'Done.'
 
