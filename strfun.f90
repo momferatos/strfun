@@ -214,12 +214,12 @@ module random
 
 contains
 
-  subroutine SRAND(ISEED)
+  subroutine pm_srand(ISEED)
     implicit none
     integer(ik) :: iseed
     !
     !  This subroutine sets the integer seed to be used with the
-    !  companion RAND function to the value of ISEED.  A flag is
+    !  companion pm_rand function to the value of ISEED.  A flag is
     !  set to indicate that the sequence of pseudo-random numbers
     !  for the specified seed should start from the beginning.
     !
@@ -228,9 +228,9 @@ contains
     IFRST = 0
     !
     return
-  end subroutine SRAND
+  end subroutine pm_srand
 
-  real(rk) function RAND()
+  real(rk) function pm_rand()
     implicit none
     !
     !  This function returns a pseudo-random number for each invocation.
@@ -261,10 +261,10 @@ contains
     else
        NEXTN = TESTV + MODLUS
     endif
-    RAND = real(NEXTN)/real(MODLUS)
+    pm_rand = real(NEXTN)/real(MODLUS)
     !
     return
-  end function RAND
+  end function pm_rand
 
 
 end module random
@@ -331,7 +331,7 @@ contains
     allocate(kkk(niii))
     allocate(mm(niii))
     call system_clock(cputime)
-    call srand(cputime)
+    call pm_srand(cputime)
     do inc=1,maxincr
        dx(inc) = real(inc, rk) * 2.0 * PI/ real(n, rk)
        npointsi=0
@@ -358,7 +358,7 @@ contains
           do i=1,maxpoints
              ! pick a uniform index in [1, npointsi], distinct from earlier picks
              do
-                irand=int(rand()*npointsi)+1
+                irand=int(pm_rand()*npointsi)+1
                 if(.not.any(irand==mm(1:i-1))) exit
              end do
              mm(i)=irand
