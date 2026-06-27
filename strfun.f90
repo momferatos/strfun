@@ -40,6 +40,38 @@ subroutine check_h5(error, context)
    end if
 end subroutine check_h5
 
+subroutine probe_hdf5_fields(filename, mhd, rad)
+   ! Open the input file read-only and report which optional fields are
+   ! present: magnetic field (/b) enables MHD, and the radiation pair
+   ! (/G and /q) enables RAD.
+   implicit none
+   character(*), intent(IN) :: filename
+   logical, intent(OUT)     :: mhd, rad
+   integer(hid_t) :: file_id
+   integer        :: error
+   logical        :: has_b, has_g, has_q
+
+   call h5open_f(error)
+   call h5fopen_f(trim(filename), H5F_ACC_RDONLY_F, file_id, error)
+   call check_h5(error, 'opening '//trim(filename))
+
+   call h5lexists_f(file_id, '/b', has_b, error)
+   call h5lexists_f(file_id, '/G', has_g, error)
+   call h5lexists_f(file_id, '/q', has_q, error)
+
+   call h5fclose_f(file_id, error)
+   call h5close_f(error)
+
+   mhd = has_b
+   rad = has_g .and. has_q
+   if(has_g .neqv. has_q) then
+      print '(a)', 'Warning: only one of /G, /q present; radiation disabled.'
+   end if
+   print '(a,l1,a,l1)', 'Detected fields -> MHD: ', mhd, '  RAD: ', rad
+
+   return
+end subroutine probe_hdf5_fields
+
 subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun_data, tot)
    use types
    implicit none
@@ -599,8 +631,9 @@ program strfun
   n1=n
   n2=n
   n3=n
-  MHD=.false.
-  RAD=.false.
+  ! detect which optional fields (/b, /G, /q) are present, then allocate
+  ! and read only what is actually in the file
+  call probe_hdf5_fields(trim(fname), MHD, RAD)
   allocate(u1(n1,n2,n3),u2(n1,n2,n3),u3(n1,n2,n3))
   if(MHD) then
      allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
