@@ -30,6 +30,16 @@ module input_output
 
 contains
 
+subroutine check_h5(error, context)
+   implicit none
+   integer, intent(IN) :: error
+   character(*), intent(IN) :: context
+   if(error < 0) then
+      print '(a,i0,2a)', 'FATAL: HDF5 error ', error, ' during ', trim(context)
+      stop 1
+   end if
+end subroutine check_h5
+
 subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun_data, tot)
    use types
    implicit none
@@ -85,9 +95,11 @@ subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun
           print *, 'Warning: file ', trim(filename), ' already exists. Overwriting.'
        end if
        call h5fcreate_f(filename, h5f_acc_trunc_f, file_id, error)
+       call check_h5(error, 'creating '//trim(filename))
        first_time = .false.
     else
         call h5fopen_f(filename, h5f_acc_rdwr_f, file_id, error)
+        call check_h5(error, 'opening '//trim(filename))
         
         ! check if a dataset with this name already exists
         call h5lexists_f(file_id, dsetname, dset_exists, error)
@@ -103,9 +115,11 @@ subroutine write_strfun_to_hdf5(hdf5_fname, strfun_name, maxincr, maxord, strfun
     ! 4. create the dataset (using native double type)
     call h5dcreate_f(file_id, dsetname, h5t_native_double, dataspace_id, &
                      dataset_id, error)
+    call check_h5(error, 'creating dataset '//trim(dsetname))
 
     ! 5. write the array data (using native double type)
     call h5dwrite_f(dataset_id, h5t_native_double, data_array, dims, error)
+    call check_h5(error, 'writing dataset '//trim(dsetname))
 
     ! 6. clean up identifiers
     call h5dclose_f(dataset_id, error)
@@ -135,6 +149,7 @@ end subroutine add_hdf5_1d
 
     call h5open_f(error)
     call h5fopen_f(trim(filename), H5F_ACC_RDONLY_F, file_id, error)
+    call check_h5(error, 'opening '//trim(filename))
 
     allocate(vec(1:3,1:n1,1:n2,1:n3))
 
@@ -172,11 +187,13 @@ end subroutine add_hdf5_1d
 
       dims = [3_hsize_t, int(n1,hsize_t), int(n2,hsize_t), int(n3,hsize_t)]
       call h5dopen_f(file_id, dataset_name, dset_id, err)
+      call check_h5(err, 'opening dataset '//trim(dataset_name))
       if(rks==sp) then
          call h5dread_f(dset_id, H5T_NATIVE_REAL, dataset, dims, err)
       else
          call h5dread_f(dset_id, H5T_NATIVE_DOUBLE, dataset, dims, err)
       end if
+      call check_h5(err, 'reading dataset '//trim(dataset_name))
       call h5dclose_f(dset_id, err)
 
       return
@@ -266,8 +283,7 @@ contains
     use input_output
     implicit none
     integer(ik), intent(IN) :: n1,n2,n3,maxord,maxpoints
-    integer(ik), intent(INOUT) :: maxincr
-    integer :: nfilestrfun=0
+    integer(ik), intent(IN) :: maxincr
     real(rks), dimension(1:n1,1:n2,1:n3), intent(IN) :: u1,u2,u3,b1,b2,b3
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     integer(ik) :: i,j,k,n,ord
@@ -283,12 +299,13 @@ contains
          &strfuncsbt,strfuncszp,strfuncszm
     real(rk), dimension(:), allocatable :: dx
     real(rk), dimension(:), allocatable :: totinc
+    real(rk), dimension(:), allocatable :: ffinc
     integer(ik) :: nn1,nn2,nn3
     integer(i2b), dimension(:), allocatable :: iii,jjj,kkk
     integer(ik), dimension(:), allocatable  :: mm
     integer(i8b) :: niii,m,npoints
     integer(ik) :: inc,npointsi,irand,cputime
-    character(256) :: strfun_name, hdf5_fname
+    character(256) :: hdf5_fname
 
     nn1=n1
     nn2=n2
@@ -298,12 +315,17 @@ contains
 
     allocate(dx(maxincr))
     allocate(totinc(maxincr))
+    allocate(ffinc(maxincr))
     allocate(strfuncsv(maxincr,maxord),strfuncsvt(maxincr,maxord))
     allocate(strfuncsb(maxincr,maxord),strfuncsbt(maxincr,maxord))
     allocate(strfuncszp(maxincr,maxord),strfuncszm(maxincr,maxord))
 
 
-    niii=int(4./3.*PI*n**2)
+    ! generous upper bound on the lattice-point count in the largest shell
+    ! (inc = maxincr); i8b avoids overflow and the runtime check below is the
+    ! real backstop should this ever be too small
+    niii=int(4.0_rk/3.0_rk*PI*(real(maxincr+1,rk)**3-real(maxincr,rk)**3),i8b) &
+         +int(8.0_rk*PI*real(maxincr,rk),i8b)+64_i8b
     allocate(iii(niii))
     allocate(jjj(niii))
     allocate(kkk(niii))
@@ -322,9 +344,9 @@ contains
                       print *, 'error: shell point count exceeds niii =', niii
                       stop 1
                    end if
-                   iii(npointsi)=i
-                   jjj(npointsi)=j
-                   kkk(npointsi)=k
+                   iii(npointsi)=int(i,i2b)
+                   jjj(npointsi)=int(j,i2b)
+                   kkk(npointsi)=int(k,i2b)
                 end if
              end do
           end do
@@ -436,6 +458,7 @@ contains
 
        ! pair count for this increment: used to normalize this row only
        totinc(inc) = tot
+       ffinc(inc) = ff
 
     end do
 
@@ -448,6 +471,8 @@ contains
        call write_strfun_to_hdf5(hdf5_fname, 'Db_t', maxincr, maxord, strfuncsbt, totinc)
        call write_strfun_to_hdf5(hdf5_fname, 'Dzp', maxincr, maxord, strfuncszp, totinc)
        call write_strfun_to_hdf5(hdf5_fname, 'Dzm', maxincr, maxord, strfuncszm, totinc)
+       ! Politano-Pouquet 4/3 flux: one signed value per increment
+       call add_hdf5_1d(hdf5_fname, 'Fourthirds', ffinc/totinc)
     end if
 
     return
@@ -455,18 +480,11 @@ contains
   end subroutine structure_functions
 
   pure elemental function per(ij,n)
+    ! periodic wrap of a 1-based index into [1, n] for any integer ij
     integer(ik) :: per
     integer(ik), intent(IN) :: ij,n
-    if(ij<1) then
-       per=ij+n
-    else if(ij>n) then
-       per=ij-n
-    else
-       per=ij
-    end if
-
+    per = modulo(ij-1, n) + 1
     return
-
   end function per
 
 end module structure
