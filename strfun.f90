@@ -440,6 +440,9 @@ contains
     allocate(jjj(niii))
     allocate(kkk(niii))
     allocate(mm(niii))
+    ! zero the tails: a bad index past npointsi then reads a null offset
+    ! (loud NaN via dist=0) instead of silently plausible garbage
+    iii=0_i2b ; jjj=0_i2b ; kkk=0_i2b
     call system_clock(cputime)
     call pm_srand(cputime)
     do inc=1,maxincr
@@ -596,7 +599,8 @@ contains
 
     end do
 
-    write(hdf5_fname,'(a,i6.6,a)') 'strfun.',nfile,'.h5'
+    ! i0.6: zero-pad to 6 digits but expand for larger snapshot numbers
+    write(hdf5_fname,'(a,i0.6,a)') 'strfun.',nfile,'.h5'
     call add_hdf5_1d(hdf5_fname,'Dx',dx)
     call write_strfun_to_hdf5(hdf5_fname, 'Du_l', maxincr, maxord, strfuncsv, totinc)
     call write_strfun_to_hdf5(hdf5_fname, 'Du_t', maxincr, maxord, strfuncsvt, totinc)
@@ -698,7 +702,7 @@ contains
     implicit none
     integer(ik), intent(out)  :: n, nord, maxpoints, nmaxincr
     character(*), intent(out) :: fname
-    integer        :: i, nargs, eq
+    integer        :: i, nargs, eq, astat
     character(256) :: arg, key, val
     logical        :: inline_val
 
@@ -712,7 +716,12 @@ contains
     nargs = command_argument_count()
     i = 1
     do while (i <= nargs)
-       call get_command_argument(i, arg)
+       call get_command_argument(i, arg, status=astat)
+       if (astat /= 0) then
+          print '(a,i0,a,i0,a)', 'Error: cannot read argument ', i, &
+               &' (longer than ', len(arg), ' characters?)'
+          stop 1
+       end if
 
        ! support both "--key=value" and "--key value"
        eq = index(arg, '=')
@@ -746,7 +755,29 @@ contains
 
        i = i + 1
     end do
+
+    ! validate: counts must be positive (n = -1 means auto-detect), and
+    ! maxincr must fit the 2-byte shell-offset arrays (offsets reach
+    ! maxincr+1, so the ceiling is huge(1_i2b)-1)
+    if (n /= -1 .and. n < 1) &
+         call usage_error('--size must be a positive integer')
+    if (nord < 1) &
+         call usage_error('--order must be at least 1')
+    if (maxpoints < 1) &
+         call usage_error('--maxpoints must be at least 1')
+    if (nmaxincr < 1) &
+         call usage_error('--maxincr must be at least 1')
+    if (nmaxincr > int(huge(1_i2b),ik) - 1_ik) &
+         call usage_error('--maxincr must be at most 32766')
   end subroutine parse_command_line
+
+  subroutine usage_error(msg)
+    implicit none
+    character(*), intent(in) :: msg
+    print '(2a)', 'Error: ', msg
+    call print_usage()
+    stop 1
+  end subroutine usage_error
 
   subroutine need_value(i, val, inline_val, key)
     ! supply the value for an option: either inline (--key=value, already
@@ -756,13 +787,19 @@ contains
     character(*), intent(inout) :: val
     logical, intent(in)         :: inline_val
     character(*), intent(in)    :: key
+    integer :: astat
     if (.not. inline_val) then
        if (i + 1 > command_argument_count()) then
           print '(2a)', 'Error: missing value for option ', trim(key)
           call print_usage() ; stop 1
        end if
        i = i + 1
-       call get_command_argument(i, val)
+       call get_command_argument(i, val, status=astat)
+       if (astat /= 0) then
+          print '(3a,i0,a)', 'Error: cannot read value for option ', trim(key), &
+               &' (longer than ', len(val), ' characters?)'
+          stop 1
+       end if
     end if
   end subroutine need_value
 
