@@ -632,7 +632,7 @@ program strfun
   real(rks), dimension(:,:,:), allocatable :: g,q1,q2,q3
   character(256) :: fname
   integer(ik) :: nord,nmaxincr,maxpoints,nfile
-  integer :: ip1,ip2
+  integer :: ip1,ip2,ios
 
   ! parse named command-line options (-n, -p, -m, -i, -f; -h for help)
   call parse_command_line(n, nord, maxpoints, nmaxincr, fname)
@@ -641,9 +641,11 @@ program strfun
   ! number nfile out of the filename so the output can be tagged with it
   ip2 = index(trim(fname), '.h5', back=.true.)
   ip1 = index(fname(1:max(ip2-1,1)), '.', back=.true.)
+  ios = 1
   if(ip1>0 .and. ip2>ip1+1) then
-     read(fname(ip1+1:ip2-1),*) nfile
-  else
+     read(fname(ip1+1:ip2-1),*,iostat=ios) nfile
+  end if
+  if(ios /= 0) then
      print *, 'Warning: could not parse nfile from ', trim(fname), '; using 0'
      nfile = 0
   end if
