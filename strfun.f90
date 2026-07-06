@@ -311,15 +311,20 @@ contains
 
   subroutine pm_srand(ISEED)
     implicit none
-    integer(ik) :: iseed
+    integer(ik), intent(IN) :: iseed
+    integer(i4b), parameter :: MODLUS=2147483647
     !
     !  This subroutine sets the integer seed to be used with the
     !  companion pm_rand function to the value of ISEED.  A flag is
     !  set to indicate that the sequence of pseudo-random numbers
     !  for the specified seed should start from the beginning.
     !
+    !  Park-Miller requires a seed in [1, MODLUS-1]: fold the 64-bit
+    !  input into that range instead of truncating to 4 bytes, which
+    !  could wrap to 0 (whose first iterate yields exactly 1.0) or
+    !  to a negative value.
     !
-    JSEED = int(ISEED,i4b)
+    JSEED = int(modulo(ISEED, int(MODLUS-1_i4b, ik)), i4b) + 1_i4b
     IFRST = 0
     !
     return
