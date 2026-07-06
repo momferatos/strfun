@@ -40,15 +40,18 @@ subroutine check_h5(error, context)
    end if
 end subroutine check_h5
 
-subroutine probe_hdf5_fields(filename, mhd, rad)
+subroutine probe_hdf5_fields(filename, mhd, rad, nf1, nf2, nf3)
    ! Open the input file read-only and report which optional fields are
    ! present: magnetic field (/b) enables MHD, and the radiation pair
-   ! (/G and /q) enables RAD.
+   ! (/G and /q) enables RAD. Also return the grid dimensions read from
+   ! the /u dataset extent, so buffers can be sized from the file itself.
    implicit none
    character(*), intent(IN) :: filename
    logical, intent(OUT)     :: mhd, rad
-   integer(hid_t) :: file_id
-   integer        :: error
+   integer(ik), intent(OUT) :: nf1, nf2, nf3
+   integer(hid_t) :: file_id, dset_id, space_id
+   integer        :: error, ndims
+   integer(hsize_t), dimension(1:4) :: dims, maxdims
    logical        :: has_b, has_g, has_q
 
    call h5open_f(error)
@@ -58,6 +61,27 @@ subroutine probe_hdf5_fields(filename, mhd, rad)
    call h5lexists_f(file_id, '/b', has_b, error)
    call h5lexists_f(file_id, '/G', has_g, error)
    call h5lexists_f(file_id, '/q', has_q, error)
+
+   ! grid size from the extent of /u, stored as (3, n1, n2, n3)
+   call h5dopen_f(file_id, '/u', dset_id, error)
+   call check_h5(error, 'opening dataset /u')
+   call h5dget_space_f(dset_id, space_id, error)
+   call h5sget_simple_extent_ndims_f(space_id, ndims, error)
+   if(ndims /= 4) then
+      print '(a,i0)', 'FATAL: /u must have rank 4 (3,n1,n2,n3), found rank ', ndims
+      stop 1
+   end if
+   call h5sget_simple_extent_dims_f(space_id, dims, maxdims, error)
+   call check_h5(error, 'reading extent of /u')
+   if(dims(1) /= 3) then
+      print '(a,i0)', 'FATAL: first extent of /u must be 3, found ', dims(1)
+      stop 1
+   end if
+   nf1 = int(dims(2), ik)
+   nf2 = int(dims(3), ik)
+   nf3 = int(dims(4), ik)
+   call h5sclose_f(space_id, error)
+   call h5dclose_f(dset_id, error)
 
    call h5fclose_f(file_id, error)
    call h5close_f(error)
@@ -624,12 +648,15 @@ program strfun
      nfile = 0
   end if
 
-  n1=n
-  n2=n
-  n3=n
-  ! detect which optional fields (/b, /G, /q) are present, then allocate
-  ! and read only what is actually in the file
-  call probe_hdf5_fields(trim(fname), MHD, RAD)
+  ! detect which optional fields (/b, /G, /q) are present and read the grid
+  ! dimensions from /u, then allocate and read only what is actually there;
+  ! sizing the buffers from the file prevents h5dread_f overflowing them
+  call probe_hdf5_fields(trim(fname), MHD, RAD, n1, n2, n3)
+  if(n > 0 .and. (n1 /= n .or. n2 /= n .or. n3 /= n)) then
+     print '(a,i0,a,3(i0,1x))', 'FATAL: -n ', n, &
+          &' does not match grid in file: ', n1, n2, n3
+     stop 1
+  end if
   allocate(u1(n1,n2,n3),u2(n1,n2,n3),u3(n1,n2,n3))
   if(MHD) then
      allocate(b1(n1,n2,n3),b2(n1,n2,n3),b3(n1,n2,n3))
@@ -646,7 +673,7 @@ program strfun
 
   call read_hdf5_file(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,trim(fname),MHD,RAD)
 
-  call structure_functions(n,n,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,nmaxincr,nord,maxpoints,nfile)
+  call structure_functions(n1,n2,n3,u1,u2,u3,b1,b2,b3,g,q1,q2,q3,nmaxincr,nord,maxpoints,nfile)
 
   print *, 'Done.'
 
@@ -666,8 +693,8 @@ contains
     character(256) :: arg, key, val
     logical        :: inline_val
 
-    ! defaults
-    n         = 128
+    ! defaults (n < 0 means: take the grid size from the input file)
+    n         = -1
     nord      = 3
     maxpoints = 100
     nmaxincr  = 64
@@ -749,7 +776,8 @@ contains
     print '(a)', 'radiation) structure functions from an ALIAKMON-style HDF5 snapshot.'
     print '(a)', ''
     print '(a)', 'Options:'
-    print '(a)', '  -n, --size N        grid points per dimension        (default 128)'
+    print '(a)', '  -n, --size N        grid points per dimension'
+    print '(a)', '                      (default: read from file; if given, must match)'
     print '(a)', '  -p, --order P       max structure-function order     (default 3)'
     print '(a)', '  -m, --maxpoints M   max sampled point-pairs / shell  (default 100)'
     print '(a)', '  -i, --maxincr I     max increment (number of shells) (default 64)'
