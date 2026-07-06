@@ -356,7 +356,9 @@ contains
     else
        NEXTN = TESTV + MODLUS
     endif
-    pm_rand = real(NEXTN)/real(MODLUS)
+    ! divide in rk precision: default-real arithmetic near 2**31 rounds
+    ! coarsely enough that the ratio could come out exactly 1.0
+    pm_rand = real(NEXTN,rk)/real(MODLUS,rk)
     !
     return
   end function pm_rand
